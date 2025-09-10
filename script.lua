@@ -13,21 +13,6 @@ local enabled = true
 local skillUIEnabled = false
 local allRemotes = {}
 local skillRemotes = {}
-local skills = {
-    "Farming",
-    "Woodcutting",
-    "Mining",
-    "Economy",
-    "Animal Care",
-    "Forging",
-    "Fishing",
-    "Cooking",
-    "Combat",
-    "Light Melee",
-    "Heavy Melee",
-    "Archery",
-    "Magic"
-}
 
 -- UI Creation
 local screenGui = Instance.new("ScreenGui")
@@ -112,7 +97,7 @@ skillCorner.Parent = skillFrame
 local skillTitle = Instance.new("TextLabel")
 skillTitle.Size = UDim2.new(1, 0, 0, 30)
 skillTitle.BackgroundTransparency = 1
-skillTitle.Text = "Skill Leveler"
+skillTitle.Text = "Dynamic Skill Leveler - Discovered Functions"
 skillTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
 skillTitle.TextScaled = true
 skillTitle.Font = Enum.Font.GothamBold
@@ -201,25 +186,11 @@ local function addConsoleMessage(message, messageType)
     end
 end
 
-local function findSkillRemote(skillName, parent)
-    local keywords = {"skill", "exp", "xp", "level", "experience", skillName:lower():gsub(" ", "")}
-    for _, child in ipairs(parent:GetDescendants()) do
-        if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
-            local childName = child.Name:lower()
-            for _, keyword in ipairs(keywords) do
-                if string.find(childName, keyword) then
-                    return child
-                end
-            end
-        end
-    end
-    return nil
-end
 
 local function scanForSkillRemotes()
     updateStatus("Scanning for skill remotes...")
     allRemotes = {}
-    skillRemotes = {}
+    skillRemotes = {}  -- Now {skillName = remote}, where skillName is derived from remote name
 
     local startTime = tick()
     local maxScanTime = 3  -- 3 second timeout
@@ -264,46 +235,47 @@ local function scanForSkillRemotes()
         end
     end
 
-    -- Now match remotes to skills based on name keywords without rescanning
+    -- Now discover skill remotes by looking for remotes with "skill" or related keywords in name
+    -- Derive skill name from remote name, e.g., "UpdateFarming" -> "Farming"
+    local generalKeywords = {"skill", "exp", "xp", "level", "experience", "update"}
     for _, remote in ipairs(allRemotes) do
         local remoteName = remote.Name:lower()
-        for _, skill in ipairs(skills) do
-            if not skillRemotes[skill] then
-                local skillLower = skill:lower():gsub(" ", "")
-                local keywords = {"skill", "exp", "xp", "level", "experience", skillLower}
-                for _, keyword in ipairs(keywords) do
-                    if string.find(remoteName, keyword) then
-                        skillRemotes[skill] = remote
-                        print("[Islands Skill] Found remote for " .. skill .. ": " .. remote.Name)
-                        break  -- Found a match, move to next skill
-                    end
-                end
+        local isSkillRemote = false
+        for _, keyword in ipairs(generalKeywords) do
+            if string.find(remoteName, keyword) then
+                isSkillRemote = true
+                break
             end
+        end
+        if isSkillRemote and not skillRemotes[remote.Name] then
+            -- Derive skill name: remove common prefixes like "Update", "Add", "Remote"
+            local skillName = remote.Name:gsub("^Update", ""):gsub("^Add", ""):gsub("^Remote", ""):gsub("Event$", ""):gsub("Function$", "")
+            if skillName == "" then skillName = remote.Name end
+            skillRemotes[skillName] = remote
+            print("[Islands Skill] Discovered skill remote: " .. skillName .. " -> " .. remote.Name)
         end
     end
 
-    -- Enhanced Fallback: If still no remotes found, assign a general one or create dummy if possible, but use first remote as fallback
-    local fallbackRemote = nil
+    -- Enhanced Fallback: If no skill-specific remotes, use any remote with level/exp keywords
     if next(skillRemotes) == nil then
+        local fallbackRemote = nil
         for _, remote in ipairs(allRemotes) do
             local remoteName = remote.Name:lower()
-            if string.find(remoteName, "skill") or string.find(remoteName, "level") or string.find(remoteName, "exp") or string.find(remoteName, "update") then
+            if string.find(remoteName, "level") or string.find(remoteName, "exp") or string.find(remoteName, "xp") or string.find(remoteName, "update") then
                 fallbackRemote = remote
+                local skillName = "General Levels"
+                skillRemotes[skillName] = fallbackRemote
+                print("[Islands Skill] Assigned fallback for general levels: " .. remote.Name)
                 break
             end
         end
         if not fallbackRemote then
-            fallbackRemote = allRemotes[1]  -- Use first remote as absolute fallback if any found
-        end
-        if fallbackRemote then
-            for _, skill in ipairs(skills) do
-                if not skillRemotes[skill] then
-                    skillRemotes[skill] = fallbackRemote
-                    print("[Islands Skill] Assigned fallback remote for " .. skill .. ": " .. fallbackRemote.Name)
-                end
+            if #allRemotes > 0 then
+                skillRemotes["Fallback"] = allRemotes[1]
+                print("[Islands Skill] Using first remote as ultimate fallback: " .. allRemotes[1].Name)
+            else
+                print("[Islands Skill] No remotes found at all - skill leveling may not work")
             end
-        else
-            print("[Islands Skill] No remotes found at all - skill leveling may not work")
         end
     end
 
@@ -312,7 +284,11 @@ local function scanForSkillRemotes()
         foundCount = foundCount + 1
     end
     local scanTime = tick() - startTime
-    updateStatus("Scan complete in " .. string.format("%.2f", scanTime) .. "s. Found " .. foundCount .. "/" .. #skills .. " skill remotes. Total remotes: " .. #allRemotes)
+    local discoveredSkills = {}
+    for skill, _ in pairs(skillRemotes) do
+        table.insert(discoveredSkills, skill)
+    end
+    updateStatus("Scan complete in " .. string.format("%.2f", scanTime) .. "s. Discovered " .. foundCount .. " skill functions: " .. table.concat(discoveredSkills, ", "))
 end
 
 local function createSkillUI()
@@ -323,14 +299,26 @@ local function createSkillUI()
         end
     end
 
-    for i, skill in ipairs(skills) do
+    local discoveredSkills = {}
+    for skillName, remote in pairs(skillRemotes) do
+        table.insert(discoveredSkills, {name = skillName, remote = remote})
+    end
+
+    -- Sort by name for consistent order
+    table.sort(discoveredSkills, function(a, b) return a.name < b.name end)
+
+    local layoutOrder = 1
+    for _, data in ipairs(discoveredSkills) do
+        local skillName = data.name
+        local remote = data.remote
+
         local skillFrame = Instance.new("Frame")
         skillFrame.Size = UDim2.new(1, -10, 0, 80)
         skillFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
         skillFrame.BackgroundTransparency = 0.3
         skillFrame.BorderSizePixel = 1
         skillFrame.BorderColor3 = Color3.fromRGB(255, 100, 255)
-        skillFrame.LayoutOrder = i
+        skillFrame.LayoutOrder = layoutOrder
         skillFrame.Parent = skillList
 
         local frameCorner = Instance.new("UICorner")
@@ -341,7 +329,7 @@ local function createSkillUI()
         skillLabel.Size = UDim2.new(0.4, 0, 0.3, 0)
         skillLabel.Position = UDim2.new(0, 5, 0, 5)
         skillLabel.BackgroundTransparency = 1
-        skillLabel.Text = skill
+        skillLabel.Text = skillName
         skillLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
         skillLabel.TextScaled = true
         skillLabel.Font = Enum.Font.GothamBold
@@ -351,8 +339,8 @@ local function createSkillUI()
         remoteLabel.Size = UDim2.new(0.6, 0, 0.3, 0)
         remoteLabel.Position = UDim2.new(0, 5, 0.3, 0)
         remoteLabel.BackgroundTransparency = 1
-        remoteLabel.Text = skillRemotes[skill] and skillRemotes[skill].Name or "No Remote Found"
-        remoteLabel.TextColor3 = skillRemotes[skill] and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+        remoteLabel.Text = remote.Name
+        remoteLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
         remoteLabel.TextScaled = true
         remoteLabel.Font = Enum.Font.Gotham
         remoteLabel.TextWrapped = true
@@ -385,45 +373,42 @@ local function createSkillUI()
             shimmerEffect(trim)
 
             btn.MouseButton1Click:Connect(function()
-                if skillRemotes[skill] then
-                    local remote = skillRemotes[skill]
-                    local levelToAdd = levels[j]
-                    pcall(function()
-                        -- Try multiple arg combinations for compatibility
-                        local success = false
-                        local argCombos = {
-                            {levelToAdd, skill},
-                            {skill, levelToAdd},
-                            {levelToAdd},
-                            {skill},
-                            {levelToAdd, skill:lower():gsub(" ", "_")}
-                        }
-                        for _, args in ipairs(argCombos) do
-                            local ok, err = pcall(function()
-                                if remote:IsA("RemoteEvent") then
-                                    remote:FireServer(unpack(args))
-                                elseif remote:IsA("RemoteFunction") then
-                                    remote:InvokeServer(unpack(args))
-                                end
-                            end)
-                            if ok then
-                                success = true
-                                break
+                local levelToAdd = levels[j]
+                pcall(function()
+                    -- Try multiple arg combinations for compatibility (since no predefined skill, use levelToAdd and possibly skillName)
+                    local success = false
+                    local argCombos = {
+                        {levelToAdd, skillName},
+                        {skillName, levelToAdd},
+                        {levelToAdd},
+                        {skillName},
+                        {levelToAdd, skillName:lower():gsub(" ", "_")}
+                    }
+                    for _, args in ipairs(argCombos) do
+                        local ok, err = pcall(function()
+                            if remote:IsA("RemoteEvent") then
+                                remote:FireServer(unpack(args))
+                            elseif remote:IsA("RemoteFunction") then
+                                remote:InvokeServer(unpack(args))
                             end
+                        end)
+                        if ok then
+                            success = true
+                            break
                         end
-                        if success then
-                            updateStatus("Added " .. levelToAdd .. " levels to " .. skill)
-                            print("[Islands Skill] Successfully fired " .. remote.Name .. " for " .. skill .. " + " .. levelToAdd)
-                        else
-                            updateStatus("Failed to fire remote for " .. skill .. " - check console")
-                            warn("[Islands Skill] Failed to fire " .. remote.Name .. " for " .. skill)
-                        end
-                    end)
-                else
-                    updateStatus("No remote found for " .. skill)
-                end
+                    end
+                    if success then
+                        updateStatus("Added " .. levelToAdd .. " levels to " .. skillName)
+                        print("[Islands Skill] Successfully fired " .. remote.Name .. " for " .. skillName .. " + " .. levelToAdd)
+                    else
+                        updateStatus("Failed to fire remote for " .. skillName .. " - check console")
+                        warn("[Islands Skill] Failed to fire " .. remote.Name .. " for " .. skillName)
+                    end
+                end)
             end)
         end
+
+        layoutOrder = layoutOrder + 1
     end
 
     skillList.CanvasSize = UDim2.new(0, 0, 0, skillLayout.AbsoluteContentSize.Y)
