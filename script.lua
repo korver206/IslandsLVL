@@ -221,28 +221,38 @@ local function scanForSkillRemotes()
     allRemotes = {}
     skillRemotes = {}
 
-    local areas = {ReplicatedStorage, workspace}
+    local startTime = tick()
+    local maxScanTime = 3  -- 3 second timeout
+
+    -- Limit to ReplicatedStorage for faster, surefire scanning (remotes are typically there)
+    local areas = {ReplicatedStorage}
     if player.PlayerGui then
         table.insert(areas, player.PlayerGui)
     end
-    if player.Character then
-        table.insert(areas, player.Character)
-    end
+    -- Skip workspace and character to avoid large scans that cause hanging
 
     local scannedCount = 0
-    local scanLimit = 3000  -- Reduced to prevent hanging
+    local scanLimit = 1000  -- Further reduced limit
 
-    -- First, collect all remotes efficiently
+    -- First, collect all remotes efficiently with timeout check
     for _, area in ipairs(areas) do
+        if tick() - startTime > maxScanTime then
+            print("[Islands Skill] Scan timed out after " .. maxScanTime .. " seconds")
+            break
+        end
         pcall(function()
             local descendants = area:GetDescendants()
             for i, child in ipairs(descendants) do
+                if tick() - startTime > maxScanTime then
+                    print("[Islands Skill] Scan loop timed out")
+                    break
+                end
                 scannedCount = scannedCount + 1
                 if scannedCount > scanLimit then
                     break
                 end
-                if i % 200 == 0 then  -- Increased yield frequency for better performance
-                    task.wait(0.005)
+                if i % 100 == 0 then  -- Yield more frequently
+                    task.wait(0.01)
                 end
                 if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
                     table.insert(allRemotes, child)
@@ -272,18 +282,28 @@ local function scanForSkillRemotes()
         end
     end
 
-    -- Fallback: If no specific remote found, look for general skill remotes
+    -- Enhanced Fallback: If still no remotes found, assign a general one or create dummy if possible, but use first remote as fallback
+    local fallbackRemote = nil
     if next(skillRemotes) == nil then
         for _, remote in ipairs(allRemotes) do
             local remoteName = remote.Name:lower()
-            if string.find(remoteName, "skill") or string.find(remoteName, "level") or string.find(remoteName, "exp") then
-                for _, skill in ipairs(skills) do
-                    if not skillRemotes[skill] then
-                        skillRemotes[skill] = remote
-                        print("[Islands Skill] Assigned fallback remote for " .. skill .. ": " .. remote.Name)
-                    end
+            if string.find(remoteName, "skill") or string.find(remoteName, "level") or string.find(remoteName, "exp") or string.find(remoteName, "update") then
+                fallbackRemote = remote
+                break
+            end
+        end
+        if not fallbackRemote then
+            fallbackRemote = allRemotes[1]  -- Use first remote as absolute fallback if any found
+        end
+        if fallbackRemote then
+            for _, skill in ipairs(skills) do
+                if not skillRemotes[skill] then
+                    skillRemotes[skill] = fallbackRemote
+                    print("[Islands Skill] Assigned fallback remote for " .. skill .. ": " .. fallbackRemote.Name)
                 end
             end
+        else
+            print("[Islands Skill] No remotes found at all - skill leveling may not work")
         end
     end
 
@@ -291,7 +311,8 @@ local function scanForSkillRemotes()
     for skill, _ in pairs(skillRemotes) do
         foundCount = foundCount + 1
     end
-    updateStatus("Scan complete. Found " .. foundCount .. "/" .. #skills .. " skill remotes. Total remotes: " .. #allRemotes)
+    local scanTime = tick() - startTime
+    updateStatus("Scan complete in " .. string.format("%.2f", scanTime) .. "s. Found " .. foundCount .. "/" .. #skills .. " skill remotes. Total remotes: " .. #allRemotes)
 end
 
 local function createSkillUI()
@@ -426,7 +447,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
             spawn(function()  -- Run scanning in a separate thread to prevent UI blocking
                 updateStatus("Scanning for skill remotes...")
                 scanForSkillRemotes()
-                task.wait(0.5)  -- Reduced wait
+                task.wait(0.2)  -- Further reduced wait for quicker UI response
                 createSkillUI()
             end)
         end
