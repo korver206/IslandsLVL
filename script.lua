@@ -11,8 +11,7 @@ local player = Players.LocalPlayer
 
 local enabled = true
 local skillUIEnabled = false
-local allRemotes = {}
-local skillRemotes = {}
+local skillRemote = nil
 
 -- UI Creation
 local screenGui = Instance.new("ScreenGui")
@@ -97,7 +96,7 @@ skillCorner.Parent = skillFrame
 local skillTitle = Instance.new("TextLabel")
 skillTitle.Size = UDim2.new(1, 0, 0, 30)
 skillTitle.BackgroundTransparency = 1
-skillTitle.Text = "Dynamic Skill Leveler - Discovered Functions"
+skillTitle.Text = "Skill Leveler - Direct Lookup"
 skillTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
 skillTitle.TextScaled = true
 skillTitle.Font = Enum.Font.GothamBold
@@ -187,111 +186,32 @@ local function addConsoleMessage(message, messageType)
 end
 
 
-local function scanForSkillRemotes()
-    updateStatus("Scanning for skill remotes...")
-    allRemotes = {}
-    skillRemotes = {}  -- Now {skillName = remote}, where skillName is derived from remote name
-
-    local startTime = tick()
-    local maxScanTime = 3  -- 3 second timeout
-
-    -- Limit to ReplicatedStorage for faster, surefire scanning (remotes are typically there)
-    local areas = {ReplicatedStorage}
-    if player.PlayerGui then
-        table.insert(areas, player.PlayerGui)
-    end
-    -- Skip workspace and character to avoid large scans that cause hanging
-
-    local scannedCount = 0
-    local scanLimit = 1000  -- Further reduced limit
-
-    -- First, collect all remotes efficiently with timeout check
-    for _, area in ipairs(areas) do
-        if tick() - startTime > maxScanTime then
-            print("[Islands Skill] Scan timed out after " .. maxScanTime .. " seconds")
-            break
-        end
-        pcall(function()
-            local descendants = area:GetDescendants()
-            for i, child in ipairs(descendants) do
-                if tick() - startTime > maxScanTime then
-                    print("[Islands Skill] Scan loop timed out")
-                    break
-                end
-                scannedCount = scannedCount + 1
-                if scannedCount > scanLimit then
-                    break
-                end
-                if i % 100 == 0 then  -- Yield more frequently
-                    task.wait(0.01)
-                end
-                if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
-                    table.insert(allRemotes, child)
-                end
-            end
-        end)
-        if scannedCount > scanLimit then
-            break
+-- Hardcoded remote for Islands skills
+local function getSkillRemote()
+    skillRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("UpdateSkill")  -- Common path for Islands
+    if not skillRemote then
+        -- Alternative paths
+        skillRemote = ReplicatedStorage:FindFirstChild("UpdateSkill", true)
+        if not skillRemote then
+            skillRemote = ReplicatedStorage.Remotes:FindFirstChild("AddExp")
         end
     end
-
-    -- Now discover skill remotes by looking for remotes with "skill" or related keywords in name
-    -- Derive skill name from remote name, e.g., "UpdateFarming" -> "Farming"
-    local generalKeywords = {"skill", "exp", "xp", "level", "experience", "update"}
-    for _, remote in ipairs(allRemotes) do
-        local remoteName = remote.Name:lower()
-        local isSkillRemote = false
-        for _, keyword in ipairs(generalKeywords) do
-            if string.find(remoteName, keyword) then
-                isSkillRemote = true
-                break
-            end
-        end
-        if isSkillRemote and not skillRemotes[remote.Name] then
-            -- Derive skill name: remove common prefixes like "Update", "Add", "Remote"
-            local skillName = remote.Name:gsub("^Update", ""):gsub("^Add", ""):gsub("^Remote", ""):gsub("Event$", ""):gsub("Function$", "")
-            if skillName == "" then skillName = remote.Name end
-            skillRemotes[skillName] = remote
-            print("[Islands Skill] Discovered skill remote: " .. skillName .. " -> " .. remote.Name)
-        end
+    if skillRemote then
+        print("[Islands Skill] Using hardcoded remote: " .. skillRemote.Name)
+    else
+        warn("[Islands Skill] Could not find skill remote - attempting fallback")
     end
-
-    -- Enhanced Fallback: If no skill-specific remotes, use any remote with level/exp keywords
-    if next(skillRemotes) == nil then
-        local fallbackRemote = nil
-        for _, remote in ipairs(allRemotes) do
-            local remoteName = remote.Name:lower()
-            if string.find(remoteName, "level") or string.find(remoteName, "exp") or string.find(remoteName, "xp") or string.find(remoteName, "update") then
-                fallbackRemote = remote
-                local skillName = "General Levels"
-                skillRemotes[skillName] = fallbackRemote
-                print("[Islands Skill] Assigned fallback for general levels: " .. remote.Name)
-                break
-            end
-        end
-        if not fallbackRemote then
-            if #allRemotes > 0 then
-                skillRemotes["Fallback"] = allRemotes[1]
-                print("[Islands Skill] Using first remote as ultimate fallback: " .. allRemotes[1].Name)
-            else
-                print("[Islands Skill] No remotes found at all - skill leveling may not work")
-            end
-        end
-    end
-
-    local foundCount = 0
-    for skill, _ in pairs(skillRemotes) do
-        foundCount = foundCount + 1
-    end
-    local scanTime = tick() - startTime
-    local discoveredSkills = {}
-    for skill, _ in pairs(skillRemotes) do
-        table.insert(discoveredSkills, skill)
-    end
-    updateStatus("Scan complete in " .. string.format("%.2f", scanTime) .. "s. Discovered " .. foundCount .. " skill functions: " .. table.concat(discoveredSkills, ", "))
+    return skillRemote
 end
 
 local function createSkillUI()
+    -- Get the skill remote once
+    local remote = getSkillRemote()
+    if not remote then
+        updateStatus("No skill remote found - cannot level skills")
+        return
+    end
+
     -- Clear existing UI elements
     for _, child in ipairs(skillList:GetChildren()) do
         if child:IsA("Frame") then
@@ -299,26 +219,14 @@ local function createSkillUI()
         end
     end
 
-    local discoveredSkills = {}
-    for skillName, remote in pairs(skillRemotes) do
-        table.insert(discoveredSkills, {name = skillName, remote = remote})
-    end
-
-    -- Sort by name for consistent order
-    table.sort(discoveredSkills, function(a, b) return a.name < b.name end)
-
-    local layoutOrder = 1
-    for _, data in ipairs(discoveredSkills) do
-        local skillName = data.name
-        local remote = data.remote
-
+    for i, skill in ipairs(skills) do
         local skillFrame = Instance.new("Frame")
         skillFrame.Size = UDim2.new(1, -10, 0, 80)
         skillFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
         skillFrame.BackgroundTransparency = 0.3
         skillFrame.BorderSizePixel = 1
         skillFrame.BorderColor3 = Color3.fromRGB(255, 100, 255)
-        skillFrame.LayoutOrder = layoutOrder
+        skillFrame.LayoutOrder = i
         skillFrame.Parent = skillList
 
         local frameCorner = Instance.new("UICorner")
@@ -329,7 +237,7 @@ local function createSkillUI()
         skillLabel.Size = UDim2.new(0.4, 0, 0.3, 0)
         skillLabel.Position = UDim2.new(0, 5, 0, 5)
         skillLabel.BackgroundTransparency = 1
-        skillLabel.Text = skillName
+        skillLabel.Text = skill
         skillLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
         skillLabel.TextScaled = true
         skillLabel.Font = Enum.Font.GothamBold
@@ -339,7 +247,7 @@ local function createSkillUI()
         remoteLabel.Size = UDim2.new(0.6, 0, 0.3, 0)
         remoteLabel.Position = UDim2.new(0, 5, 0.3, 0)
         remoteLabel.BackgroundTransparency = 1
-        remoteLabel.Text = remote.Name
+        remoteLabel.Text = remote.Name .. " (Shared)"
         remoteLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
         remoteLabel.TextScaled = true
         remoteLabel.Font = Enum.Font.Gotham
@@ -375,14 +283,13 @@ local function createSkillUI()
             btn.MouseButton1Click:Connect(function()
                 local levelToAdd = levels[j]
                 pcall(function()
-                    -- Try multiple arg combinations for compatibility (since no predefined skill, use levelToAdd and possibly skillName)
+                    -- Fire to the shared remote with skill and level args
                     local success = false
                     local argCombos = {
-                        {levelToAdd, skillName},
-                        {skillName, levelToAdd},
-                        {levelToAdd},
-                        {skillName},
-                        {levelToAdd, skillName:lower():gsub(" ", "_")}
+                        {skill, levelToAdd},
+                        {levelToAdd, skill},
+                        {skill},
+                        {levelToAdd}
                     }
                     for _, args in ipairs(argCombos) do
                         local ok, err = pcall(function()
@@ -398,17 +305,15 @@ local function createSkillUI()
                         end
                     end
                     if success then
-                        updateStatus("Added " .. levelToAdd .. " levels to " .. skillName)
-                        print("[Islands Skill] Successfully fired " .. remote.Name .. " for " .. skillName .. " + " .. levelToAdd)
+                        updateStatus("Added " .. levelToAdd .. " levels to " .. skill)
+                        print("[Islands Skill] Fired " .. remote.Name .. " for " .. skill .. " + " .. levelToAdd)
                     else
-                        updateStatus("Failed to fire remote for " .. skillName .. " - check console")
-                        warn("[Islands Skill] Failed to fire " .. remote.Name .. " for " .. skillName)
+                        updateStatus("Failed to fire for " .. skill .. " - check console")
+                        warn("[Islands Skill] Failed to fire " .. remote.Name .. " for " .. skill)
                     end
                 end)
             end)
         end
-
-        layoutOrder = layoutOrder + 1
     end
 
     skillList.CanvasSize = UDim2.new(0, 0, 0, skillLayout.AbsoluteContentSize.Y)
@@ -429,12 +334,11 @@ UserInputService.InputBegan:Connect(function(input, processed)
         skillUIEnabled = not skillUIEnabled
         skillFrame.Visible = skillUIEnabled
         if skillUIEnabled then
-            spawn(function()  -- Run scanning in a separate thread to prevent UI blocking
-                updateStatus("Scanning for skill remotes...")
-                scanForSkillRemotes()
-                task.wait(0.2)  -- Further reduced wait for quicker UI response
-                createSkillUI()
-            end)
+            -- Direct, no waiting - get remote and create UI immediately
+            updateStatus("Initializing skill leveler...")
+            getSkillRemote()  -- Get the shared remote
+            task.wait(0.05)  -- Very short wait
+            createSkillUI()
         end
         updateStatus(skillUIEnabled and "Skill Leveler enabled" or "Skill Leveler disabled")
     end
