@@ -230,8 +230,9 @@ local function scanForSkillRemotes()
     end
 
     local scannedCount = 0
-    local scanLimit = 5000  -- Increased for thorough scan
+    local scanLimit = 3000  -- Reduced to prevent hanging
 
+    -- First, collect all remotes efficiently
     for _, area in ipairs(areas) do
         pcall(function()
             local descendants = area:GetDescendants()
@@ -240,26 +241,34 @@ local function scanForSkillRemotes()
                 if scannedCount > scanLimit then
                     break
                 end
-                if i % 100 == 0 then
-                    task.wait(0.01)
+                if i % 200 == 0 then  -- Increased yield frequency for better performance
+                    task.wait(0.005)
                 end
                 if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
                     table.insert(allRemotes, child)
-                    -- Check for each skill
-                    for _, skill in ipairs(skills) do
-                        if not skillRemotes[skill] then
-                            local remote = findSkillRemote(skill, area)
-                            if remote then
-                                skillRemotes[skill] = remote
-                                print("[Islands Skill] Found remote for " .. skill .. ": " .. remote.Name)
-                            end
-                        end
-                    end
                 end
             end
         end)
         if scannedCount > scanLimit then
             break
+        end
+    end
+
+    -- Now match remotes to skills based on name keywords without rescanning
+    for _, remote in ipairs(allRemotes) do
+        local remoteName = remote.Name:lower()
+        for _, skill in ipairs(skills) do
+            if not skillRemotes[skill] then
+                local skillLower = skill:lower():gsub(" ", "")
+                local keywords = {"skill", "exp", "xp", "level", "experience", skillLower}
+                for _, keyword in ipairs(keywords) do
+                    if string.find(remoteName, keyword) then
+                        skillRemotes[skill] = remote
+                        print("[Islands Skill] Found remote for " .. skill .. ": " .. remote.Name)
+                        break  -- Found a match, move to next skill
+                    end
+                end
+            end
         end
     end
 
@@ -282,7 +291,7 @@ local function scanForSkillRemotes()
     for skill, _ in pairs(skillRemotes) do
         foundCount = foundCount + 1
     end
-    updateStatus("Found " .. foundCount .. "/" .. #skills .. " skill remotes. Total remotes: " .. #allRemotes)
+    updateStatus("Scan complete. Found " .. foundCount .. "/" .. #skills .. " skill remotes. Total remotes: " .. #allRemotes)
 end
 
 local function createSkillUI()
@@ -359,14 +368,36 @@ local function createSkillUI()
                     local remote = skillRemotes[skill]
                     local levelToAdd = levels[j]
                     pcall(function()
-                        if remote:IsA("RemoteEvent") then
-                            remote:FireServer(levelToAdd, skill)  -- Assume args: levels, skillName
-                        elseif remote:IsA("RemoteFunction") then
-                            remote:InvokeServer(levelToAdd, skill)
+                        -- Try multiple arg combinations for compatibility
+                        local success = false
+                        local argCombos = {
+                            {levelToAdd, skill},
+                            {skill, levelToAdd},
+                            {levelToAdd},
+                            {skill},
+                            {levelToAdd, skill:lower():gsub(" ", "_")}
+                        }
+                        for _, args in ipairs(argCombos) do
+                            local ok, err = pcall(function()
+                                if remote:IsA("RemoteEvent") then
+                                    remote:FireServer(unpack(args))
+                                elseif remote:IsA("RemoteFunction") then
+                                    remote:InvokeServer(unpack(args))
+                                end
+                            end)
+                            if ok then
+                                success = true
+                                break
+                            end
+                        end
+                        if success then
+                            updateStatus("Added " .. levelToAdd .. " levels to " .. skill)
+                            print("[Islands Skill] Successfully fired " .. remote.Name .. " for " .. skill .. " + " .. levelToAdd)
+                        else
+                            updateStatus("Failed to fire remote for " .. skill .. " - check console")
+                            warn("[Islands Skill] Failed to fire " .. remote.Name .. " for " .. skill)
                         end
                     end)
-                    updateStatus("Added " .. levelToAdd .. " levels to " .. skill)
-                    print("[Islands Skill] Fired " .. remote.Name .. " for " .. skill .. " + " .. levelToAdd)
                 else
                     updateStatus("No remote found for " .. skill)
                 end
@@ -392,10 +423,12 @@ UserInputService.InputBegan:Connect(function(input, processed)
         skillUIEnabled = not skillUIEnabled
         skillFrame.Visible = skillUIEnabled
         if skillUIEnabled then
-            updateStatus("Scanning for skill remotes...")
-            scanForSkillRemotes()
-            task.wait(1)
-            createSkillUI()
+            spawn(function()  -- Run scanning in a separate thread to prevent UI blocking
+                updateStatus("Scanning for skill remotes...")
+                scanForSkillRemotes()
+                task.wait(0.5)  -- Reduced wait
+                createSkillUI()
+            end)
         end
         updateStatus(skillUIEnabled and "Skill Leveler enabled" or "Skill Leveler disabled")
     end
